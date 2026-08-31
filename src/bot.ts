@@ -1,76 +1,73 @@
-import Mineflayer from 'mineflayer';
+import bedrock from "bedrock-protocol";
 import { readFileSync } from "node:fs";
-import { sleep, getRandom } from "./utils.ts";
 
 const CONFIG = JSON.parse(readFileSync(new URL("../config.json", import.meta.url), "utf8"));
-
-let loop: NodeJS.Timeout;
-let bot: Mineflayer.Bot;
-
-const disconnect = (): void => {
-	clearInterval(loop);
-	bot?.quit?.();
-	bot?.end?.();
+const bedrockModule = bedrock as unknown as {
+	createClient?: (options: Record<string, unknown>) => any;
+	default?: { createClient?: (options: Record<string, unknown>) => any };
 };
-const reconnect = async (): Promise<void> => {
-	console.log(`Trying to reconnect in ${CONFIG.action.retryDelay / 1000} seconds...\n`);
+const createClient = bedrockModule.createClient ?? bedrockModule.default?.createClient;
 
-	disconnect();
-	await sleep(CONFIG.action.retryDelay);
-	createBot();
-	return;
+if (!createClient) {
+	throw new Error("bedrock-protocol createClient is unavailable");
+}
+
+let client: any;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+const reconnectDelay = (): number => Number(CONFIG.action.retryDelay) || 15000;
+
+const scheduleReconnect = (): void => {
+	if (reconnectTimer) return;
+	reconnectTimer = setTimeout(() => {
+		reconnectTimer = undefined;
+		createBot();
+	}, reconnectDelay());
+	console.log(`Trying to reconnect in ${reconnectDelay() / 1000} seconds...`);
+};
+
+const formatReason = (reason: unknown): string => {
+	if (reason instanceof Error) return reason.stack || reason.message;
+	if (typeof reason === "string") return reason;
+	try {
+		return JSON.stringify(reason);
+	} catch {
+		return String(reason);
+	}
 };
 
 const createBot = (): void => {
-	bot = Mineflayer.createBot({
+	console.log(`Connecting Bedrock bot ${CONFIG.client.username} to ${CONFIG.client.host}:${CONFIG.client.port}...`);
+	client = createClient({
 		host: CONFIG.client.host,
-		port: +CONFIG.client.port,
+		port: Number(CONFIG.client.port),
 		username: CONFIG.client.username,
-		auth: "offline"
-	} as const);
-
-
-	bot.once('error', error => {
-		console.error(`AFKBot got an error: ${error}`);
+		offline: true,
+		conLog: console.log
 	});
-	bot.once('kicked', rawResponse => {
-		console.error(`\n\nAFKbot is disconnected: ${rawResponse}`);
+
+	client.on("join", () => {
+		console.log(`Bedrock bot joined ${CONFIG.client.host}:${CONFIG.client.port}`);
 	});
-	bot.once('end', () => void reconnect());
-
-	bot.once('spawn', () => {
-		const changePos = async (): Promise<void> => {
-			const lastAction = getRandom(CONFIG.action.commands) as Mineflayer.ControlState;
-			const halfChance: boolean = Math.random() < 0.5? true : false; // 50% chance to sprint
-
-			console.debug(`${lastAction}${halfChance? " with sprinting" : ''}`);
-
-			bot.setControlState('sprint', halfChance);
-			bot.setControlState(lastAction, true); // starts the selected random action
-
-			await sleep(CONFIG.action.holdDuration);
-			bot.clearControlStates();
-			return;
-		};
-		const changeView = async (): Promise<void> => {
-			const yaw = (Math.random() * Math.PI) - (0.5 * Math.PI),
-				pitch = (Math.random() * Math.PI) - (0.5 * Math.PI);
-			
-			await bot.look(yaw, pitch, false);
-			return;
-		};
-		
-		loop = setInterval(() => {
-			changeView();
-			changePos();
-		}, CONFIG.action.holdDuration);
+	client.on("spawn", () => {
+		console.log(`Bedrock bot spawned as ${CONFIG.client.username}`);
 	});
-	bot.once('login', () => {
-		console.log(`AFKBot logged in ${bot.username}\n\n`);
+	client.on("heartbeat", () => {
+		console.log("Bedrock heartbeat received");
+	});
+	client.on("kick", (reason: unknown) => {
+		console.error(`Bedrock bot was kicked: ${formatReason(reason)}`);
+		scheduleReconnect();
+	});
+	client.on("error", (error: unknown) => {
+		console.error(`Bedrock bot error: ${formatReason(error)}`);
+		scheduleReconnect();
+	});
+	client.on("close", () => {
+		console.log("Bedrock connection closed");
+		scheduleReconnect();
 	});
 };
-
-
 
 export default (): void => {
 	createBot();
