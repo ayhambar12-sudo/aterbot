@@ -14,50 +14,77 @@ if (!createClient) {
 
 let client: any;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let advertisedServerVersion = "unknown";
 
-const reconnectDelay = (): number => Number(CONFIG.action.retryDelay) || 15000;
+const normalReconnectDelay = (): number => Number(CONFIG.action?.retryDelay) || 15000;
+const versionMismatchDelay = 10 * 60 * 1000;
 
-const scheduleReconnect = (): void => {
+const formatReason = (value: unknown): string => {
+	if (value instanceof Error) return value.stack || value.message;
+	if (typeof value === "string") return value;
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
+};
+
+const scheduleReconnect = (delay = normalReconnectDelay()): void => {
 	if (reconnectTimer) return;
 	reconnectTimer = setTimeout(() => {
 		reconnectTimer = undefined;
 		createBot();
-	}, reconnectDelay());
-	console.log(`Trying to reconnect in ${reconnectDelay() / 1000} seconds...`);
+	}, delay);
+	console.log(`Trying to reconnect in ${Math.round(delay / 1000)} seconds...`);
 };
 
-const formatReason = (reason: unknown): string => {
-	if (reason instanceof Error) return reason.stack || reason.message;
-	if (typeof reason === "string") return reason;
-	try {
-		return JSON.stringify(reason);
-	} catch {
-		return String(reason);
-	}
+const isOutdatedClient = (reason: unknown): boolean => formatReason(reason).includes("outdated_client");
+
+const connectionLog = (...messages: unknown[]): void => {
+	const line = messages.map(formatReason).join(" ");
+	const match = line.match(/version\s+(\d+(?:\.\d+){1,3})/i);
+	if (match) advertisedServerVersion = match[1];
+	console.log(line);
 };
 
 const createBot = (): void => {
-	console.log(`Connecting Bedrock bot ${CONFIG.client.username} to ${CONFIG.client.host}:${CONFIG.client.port}...`);
-	client = createClient({
+	const clientOptions: Record<string, unknown> = {
 		host: CONFIG.client.host,
 		port: Number(CONFIG.client.port),
 		username: CONFIG.client.username,
 		offline: true,
-		conLog: console.log
-	});
+		skipPing: false,
+		followPort: false,
+		connectTimeout: 20000,
+		conLog: connectionLog
+	};
+
+	const configuredVersion = CONFIG.client.version;
+	if (configuredVersion && configuredVersion !== "auto") {
+		clientOptions.version = configuredVersion;
+	}
+
+	console.log(`Connecting Bedrock bot ${CONFIG.client.username} to ${CONFIG.client.host}:${CONFIG.client.port}...`);
+	client = createClient(clientOptions);
 
 	client.on("join", () => {
 		console.log(`Bedrock bot joined ${CONFIG.client.host}:${CONFIG.client.port}`);
 	});
 	client.on("spawn", () => {
-		console.log(`Bedrock bot spawned as ${CONFIG.client.username}`);
+		console.log(`Bedrock bot spawned as ${CONFIG.client.username}; keep-alive is active`);
 	});
 	client.on("heartbeat", () => {
 		console.log("Bedrock heartbeat received");
 	});
 	client.on("kick", (reason: unknown) => {
-		console.error(`Bedrock bot was kicked: ${formatReason(reason)}`);
-		scheduleReconnect();
+		const details = formatReason(reason);
+		console.error(`Bedrock bot was kicked: ${details}`);
+		if (isOutdatedClient(reason)) {
+			console.error(`BEDROCK_VERSION_MISMATCH: server advertised ${advertisedServerVersion}; this client currently supports up to 1.26.40. Set the Aternos server to 1.26.40 or wait for bedrock-protocol support for the newer server version.`);
+			scheduleReconnect(versionMismatchDelay);
+		} else {
+			scheduleReconnect();
+		}
 	});
 	client.on("error", (error: unknown) => {
 		console.error(`Bedrock bot error: ${formatReason(error)}`);
