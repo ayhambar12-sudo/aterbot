@@ -1,6 +1,11 @@
 import Mineflayer from 'mineflayer';
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { sleep, getRandom } from "./utils.ts";
-import CONFIG from "../config.json" assert {type: 'json'};
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CONFIG = JSON.parse(readFileSync(join(__dirname, '../config.json'), 'utf-8'));
 
 let loop: NodeJS.Timeout;
 let bot: Mineflayer.Bot;
