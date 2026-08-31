@@ -23,7 +23,8 @@ const formatReason = (value: unknown): string => {
 	if (value instanceof Error) return value.stack || value.message;
 	if (typeof value === "string") return value;
 	try {
-		return JSON.stringify(value);
+		const encoded = JSON.stringify(value);
+		return encoded ?? String(value);
 	} catch {
 		return String(value);
 	}
